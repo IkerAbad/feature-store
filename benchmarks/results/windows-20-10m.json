@@ -1,0 +1,79 @@
+{
+  "generated_at": "2026-11-23T13:30:08+00:00",
+  "config": {
+    "ticks": 10000000,
+    "recompute_ticks": 10000000,
+    "chunk": 1000000,
+    "seed": 42,
+    "window": 20,
+    "storage_ticks": 200000,
+    "scaling_ticks": 30000
+  },
+  "environment": {
+    "python": "3.12.10",
+    "numpy": "2.5.5",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "AMD64 Family 25 Model 33 Stepping 0, AuthenticAMD",
+    "machine": "AMD64"
+  },
+  "timings": [
+    {
+      "name": "incremental",
+      "ticks": 10000000,
+      "seconds": 101.23487089999253,
+      "features": 5,
+      "ns_per_tick": 10123.487089999253
+    },
+    {
+      "name": "recompute_window",
+      "ticks": 10000000,
+      "seconds": 129.46891649998724,
+      "features": 5,
+      "ns_per_tick": 12946.891649998724
+    },
+    {
+      "name": "incremental",
+      "ticks": 10000000,
+      "seconds": 130.59160610000254,
+      "features": 6,
+      "ns_per_tick": 13059.160610000254
+    },
+    {
+      "name": "batch_once",
+      "ticks": 10000000,
+      "seconds": 7.6428196000051685,
+      "features": 6,
+      "ns_per_tick": 764.2819600005168
+    }
+  ],
+  "speedup_vs_recompute": 1.2788964449600222,
+  "scaling": [
+    {
+      "window": 20,
+      "incremental_ns_per_tick": 11650.01333380739,
+      "recompute_ns_per_tick": 14708.48666698051,
+      "speedup": 1.2625295993694428
+    },
+    {
+      "window": 100,
+      "incremental_ns_per_tick": 11687.999999655101,
+      "recompute_ns_per_tick": 64545.25000008289,
+      "speedup": 5.522351985111871
+    },
+    {
+      "window": 500,
+      "incremental_ns_per_tick": 10236.323332840888,
+      "recompute_ns_per_tick": 264314.07999965205,
+      "speedup": 25.821192962092276
+    }
+  ],
+  "storage": {
+    "ticks": 200000,
+    "ingest_seconds": 8.299625100014964,
+    "flush_seconds": 6.199989002197981e-06,
+    "reopen_seconds": 2.0360512000042945,
+    "queries": 100,
+    "query_seconds": 0.8517772999766748,
+    "rows_per_second_ingest": 24097.473993089086
+  }
+}
