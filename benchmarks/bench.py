@@ -22,7 +22,6 @@ import argparse
 import json
 import math
 import platform
-import sys
 import tempfile
 import time
 from collections import deque
@@ -32,8 +31,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from feature_store import FeatureSpec, FeatureStore
 
@@ -84,8 +81,15 @@ def chunk_stream(
         produced += size
 
 
-def run_incremental(ticks: int, chunk_size: int, seed: int, specs: Sequence[FeatureSpec]) -> Timing:
-    store = FeatureStore.null(columns=COLUMNS)
+def run_incremental(
+    ticks: int,
+    chunk_size: int,
+    seed: int,
+    specs: Sequence[FeatureSpec],
+    *,
+    retain_records: bool = False,
+) -> Timing:
+    store = FeatureStore.null(columns=COLUMNS, retain_records=retain_records)
     for spec in specs:
         store.register(spec)
     start = time.perf_counter()
@@ -93,7 +97,8 @@ def run_incremental(ticks: int, chunk_size: int, seed: int, specs: Sequence[Feat
         for index, (x, y) in enumerate(zip(xs.tolist(), ys.tolist(), strict=True)):
             store.push_values("SYM", offset + index, (x, y))
     seconds = time.perf_counter() - start
-    return Timing("incremental", ticks, seconds, len(specs))
+    name = "incremental" if not retain_records else "incremental_retained"
+    return Timing(name, ticks, seconds, len(specs))
 
 
 def run_recompute_window(ticks: int, chunk_size: int, seed: int, window: int) -> Timing:
@@ -238,9 +243,13 @@ def measure_all(args: argparse.Namespace) -> dict[str, object]:
         },
     }
     timings: list[Timing] = []
-    timings.append(run_incremental(args.ticks, args.chunk, args.seed, windowed_specs(args.window)))
+    windowed = windowed_specs(args.window)
+    timings.append(run_incremental(args.ticks, args.chunk, args.seed, windowed))
     timings.append(run_recompute_window(args.recompute_ticks, args.chunk, args.seed, args.window))
-    with_ewma = (*windowed_specs(args.window), FeatureSpec.ewma("ewma_5", 5.0))
+    timings.append(
+        run_incremental(args.ticks, args.chunk, args.seed, windowed, retain_records=True)
+    )
+    with_ewma = (*windowed, FeatureSpec.ewma("ewma_5", 5.0))
     timings.append(run_incremental(args.ticks, args.chunk, args.seed, with_ewma))
     timings.append(run_batch_once(args.ticks, args.chunk, args.seed, args.window))
     results["timings"] = [

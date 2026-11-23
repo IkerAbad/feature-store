@@ -1,0 +1,58 @@
+{
+  "generated_at": "2026-11-23T15:21:59+00:00",
+  "environment": {
+    "python": "3.12.10",
+    "numpy": "2.5.5",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "AMD64 Family 25 Model 33 Stepping 0, AuthenticAMD",
+    "machine": "AMD64"
+  },
+  "config": {
+    "tail": 100000,
+    "chunk": 1000000,
+    "window": 20,
+    "seed": 42,
+    "features": 8
+  },
+  "results": [
+    {
+      "ticks": 1000000,
+      "tail": 100000,
+      "replay_seconds": 9.811668700014707,
+      "replay_ns_per_tick": 9811.668700014707,
+      "restore_seconds": 0.9382182999979705,
+      "restore_speedup": 10.457767344802303,
+      "checkpoint_seconds": 0.013187299977289513,
+      "checkpoint_bytes": 7322,
+      "raw_bytes": 20579758,
+      "raw_files": 1,
+      "replay_retained_seconds": 11.79701959999511
+    },
+    {
+      "ticks": 10000000,
+      "tail": 100000,
+      "replay_seconds": 95.34313409999595,
+      "replay_ns_per_tick": 9534.313409999595,
+      "restore_seconds": 0.970298800006276,
+      "restore_speedup": 98.26162219244141,
+      "checkpoint_seconds": 0.012849400023696944,
+      "checkpoint_bytes": 7687,
+      "raw_bytes": 183277279,
+      "raw_files": 10,
+      "replay_retained_seconds": 89.28563679999206
+    },
+    {
+      "ticks": 100000000,
+      "tail": 100000,
+      "replay_seconds": 753.5595639999956,
+      "replay_ns_per_tick": 7535.595639999956,
+      "restore_seconds": 0.7218450999935158,
+      "restore_speedup": 1043.9352764280934,
+      "checkpoint_seconds": 0.020925899996655062,
+      "checkpoint_bytes": 11292,
+      "raw_bytes": 1811746402,
+      "raw_files": 100
+    }
+  ],
+  "notes": "Timing columns come from one sequential run of this script. checkpoint_bytes was measured in a second run of the same configuration, because the first deleted the checkpoint before reading its size for the retained cases."
+}
