@@ -40,12 +40,20 @@ the caller states how much disorder the stream is allowed to contain.
 
 ## Feature recurrences
 
-All windows are **count windows**: the last `W` observations that carried the
-required input. A record whose input column is missing (NaN) does not advance
-the window and produces a NaN output row.
+Windows are either **count windows** (the last `W` observations) or **time
+windows** (every observation with `ts` in `[t - D, t]`). A record whose input
+column is missing (NaN) does not advance either window and produces a NaN
+output row.
+
+Count windows keep a ring buffer of values. Time windows keep a deque of
+`(ts, value)` pairs and, after appending the new record, pop from the left while
+`oldest.ts < t - D`. The comparison is strict, so an observation exactly `D`
+time units old is still inside the window. Because records are processed in
+non-decreasing `ts`, evictions are monotone.
 
 The recurrences below are the definition used by the implementation. They are
-executed identically by the incremental path and by the batch replay.
+executed identically by the incremental path and by the batch replay, which is
+why time windows preserve the bit-for-bit guarantee without special cases.
 
 ### Rolling mean
 
@@ -205,11 +213,17 @@ root/
   features/feature=<name>/series=<series>/part-<ns>-<id>.parquet
   raw/series=<series>/part-<ns>-<id>.parquet
   dropped/series=<series>/part-<ns>-<id>.parquet
+  state/LATEST
+  state/checkpoint-<id>/manifest.json
+  state/checkpoint-<id>/state.parquet
+  audit/pruned-<ns>.json
 ```
 
-`catalog.json` holds the column names, the late-data configuration and the
-feature definitions, so reopening a store restores the definitions without the
-caller repeating them.
+`catalog.json` holds the column names, the late-data configuration, the
+checkpoint interval, the audit policy and the feature definitions, so reopening
+a store restores the definitions without the caller repeating them. Catalogues
+written by 0.1.0 without the new keys are read with their defaults; the schema
+version stays 1 because every added field is optional.
 
 The feature table is append-only. A row is one version of one feature at one
 key:
@@ -230,14 +244,69 @@ suffix, written to a temporary name and moved with `os.replace`. A reader
 never sees a half-written file, and a crash loses at most the in-memory buffer
 (the default flush threshold is 50 000 rows).
 
-`raw/` keeps the accepted input records. On `open`, the store reads them,
-sorts by `(ts, seq)` and rebuilds every state machine by replaying the series.
-The feature table is never used to reconstruct state, which keeps the raw log
-as the single source of truth.
+`raw/` keeps the accepted input records. Without a checkpoint, `open` replays
+them; with one, it restores the state and reads only the files that are not in
+the checkpoint manifest. The feature table is never used to reconstruct state,
+which keeps the raw log as the single source of truth.
 
 Partition names are percent-encoded, so a series called `BTC / USD` becomes
 `series=BTC%20%2F%20USD` and stays a single directory component on Windows and
 on POSIX.
+
+## Checkpoints
+
+A checkpoint is one immutable directory plus a pointer:
+
+- `state.parquet` has one row per `(series, feature)` with the exact fields of
+  the state machine: `n`, `mean`, `M2`, the EWMA value, the correlation
+  co-moment, and the window contents as `times`, `xs` and `ys` lists. Float64
+  values are stored as float64, so no precision is lost.
+- `manifest.json` stores the catalogue hash, the last key and record count of
+  every series, and the list of raw files already reflected in the state.
+- `state/LATEST` names the newest checkpoint. It is replaced atomically after
+  the new directory is complete, so a crash leaves either the old checkpoint or
+  the new one, never a partial mix.
+
+`checkpoint()` flushes the storage, writes the state of every series, prunes
+older checkpoint directories (`checkpoint_keep`, default 2) and, when
+`retain_records=False`, drops the in-memory history. `close()` writes a
+checkpoint when the interval is enabled.
+
+On open, the manifest must match the current columns and feature definitions
+(sha256 of the canonical catalogue). If it does, the state machines are
+restored and only the raw files absent from the manifest are replayed. If it
+does not, the store falls back to a full replay, which is also the behaviour
+of a store with no checkpoint.
+
+A restored engine keeps `processed` (how many records it has seen) and
+`last_key`, so ordering, watermarks and auto-`seq` continue exactly where the
+checkpoint stopped. The test suite feeds the same 80 further ticks to a
+restored store and to one that never closed and requires bit-identical values.
+
+## Streaming replay
+
+`FeatureStore.open` with `retain_records=False` and no checkpoint reads the raw
+log file by file and feeds the state machines in order, so memory stays O(1) in
+`N` instead of O(N · F). The raw log is written in arrival order; if a batch is
+not sorted by `(ts, seq)` (because a late record was accepted), the store
+discards the partial state and rebuilds from a fully sorted read. That is the
+documented O(N) memory fallback, and it only triggers for logs with late
+corrections.
+
+## Pruning
+
+`prune(keep_versions=N)` groups each partition by `(ts, seq)`, sorts by
+`version` and keeps the last N rows of each group. It rewrites the partition
+with the surviving rows, deletes the old immutable files and writes
+`audit/pruned-<ns>.json` with the policy and per-partition counts. The latest
+version of a key is always kept, so every query returns the same value before
+and after pruning.
+
+The Parquet schema is unchanged, which is why no migration is needed. The
+operation is not a transaction across partitions: a crash between the compacted
+write and the deletion of the old files can leave two identical rows with the
+same version. `history` would show them twice, but `get` and `point_in_time`
+keep the highest version per key, so results are unaffected.
 
 ## Complexity
 
@@ -247,20 +316,26 @@ on POSIX.
 | Out-of-order or late recompute     | O(N · F)              | O(N · F)          |
 | Point-in-time query (cached)       | O(log N)              | O(N) timeline     |
 | Point-in-time query (cold)         | O(N)                  | O(N) timeline     |
-| Reopen                             | O(N · F)              | O(N · F)          |
+| Reopen, no checkpoint              | O(N · F)              | O(N · F) retained, O(F · W) streaming |
+| Reopen, checkpoint                 | O(tail · F)           | O(F · W) + tail   |
+| Checkpoint write                   | O(F · W)              | O(F · W)          |
+| Prune, keep N versions             | O(rows)               | O(rows of partition) |
 
-`N` is the number of records in the series and `W` the window size.
+`N` is the number of records in the series, `W` the window size (in records for
+count windows, in records inside the time span for time windows) and `tail` the
+records written after the checkpoint.
 
 ## Limitations
 
 - Single writer. There is no locking and no cross-process coordination.
-- State lives in memory. Reopening replays the raw log, which is linear in the
-  number of records.
-- Count windows only. Time-based windows would make eviction depend on `ts`
-  deltas rather than on a fixed ring.
+- A late recompute older than the retained history rebuilds from the raw log,
+  which is O(N) in time and memory. Checkpoints make reopening cheap, not
+  arbitrarily old corrections.
 - Queries load the whole partition. Predicate pushdown on `ts` is possible but
   not implemented.
-- The audit table grows without compaction. Correction rows are rare, but a
-  long-lived store needs a retention policy eventually.
-- The sliding moments are not exact in real arithmetic. See the discussion
-  above.
+- Pruning rewrites a partition in place and is not a cross-partition
+  transaction; see the duplicate-row note above.
+- Time windows store one entry per record inside the span, so a wide window
+  over a dense stream costs memory proportional to the number of records in it.
+- The sliding moments have bounded floating-point drift; they are not exact in
+  real arithmetic. See the discussion above.
