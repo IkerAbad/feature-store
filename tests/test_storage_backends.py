@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from feature_store import FeatureSpec, FeatureStore
-from feature_store.storage import DroppedRecord, FeatureRow, MemoryStorage, NullStorage
+from feature_store.storage import DroppedRecord, FeatureRow, MemoryStorage, NullStorage, RawRecord
 
 
 def test_null_storage_counts_and_returns_nothing() -> None:
@@ -16,10 +16,29 @@ def test_null_storage_counts_and_returns_nothing() -> None:
     assert storage.raw_written == 0
     assert storage.dropped_written == 0
     assert storage.rows("m", "S") == []
+    assert storage.partitions() == []
+    assert list(storage.iter_raw()) == []
+    storage.rewrite_partition("m", "S", [row])
     assert storage.read_raw() == []
     assert storage.read_dropped() == []
     storage.flush()
     storage.close()
+
+
+def test_memory_storage_partitions_and_rewrite() -> None:
+    storage = MemoryStorage()
+    first = FeatureRow("m", "A", 1, 0, 1.0, 1, "append", 0)
+    second = FeatureRow("m", "A", 1, 0, 2.0, 2, "append", 0)
+    other = FeatureRow("m", "B", 1, 0, 3.0, 1, "append", 0)
+    storage.write_rows([first, second, other])
+    assert storage.partitions() == [("m", "A"), ("m", "B")]
+    batches = list(storage.iter_raw())
+    assert batches == []
+    storage.write_raw([RawRecord("A", 1, 0, (1.0,), 0)])
+    assert list(storage.iter_raw()) == [("A", [RawRecord("A", 1, 0, (1.0,), 0)])]
+    storage.rewrite_partition("m", "A", [second])
+    assert storage.rows("m", "A") == [second]
+    assert storage.rows("m", "B") == [other]
 
 
 def test_feature_store_with_a_null_backend_skips_writes() -> None:

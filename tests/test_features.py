@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from bisect import bisect_left
 
 import numpy as np
 import pytest
@@ -22,22 +23,33 @@ RTOL = 1e-8
 ATOL = 1e-12
 
 
-def _run(spec: FeatureSpec, xs: list[float], ys: list[float] | None = None) -> list[float]:
+def _run(
+    spec: FeatureSpec,
+    xs: list[float],
+    ys: list[float] | None = None,
+    ts: list[int] | None = None,
+) -> list[float]:
     store = FeatureStore.memory(columns=("x", "y"))
     store.register(spec)
+    timestamps = ts if ts is not None else list(range(len(xs)))
     values: list[float] = []
     for index, x in enumerate(xs):
         if ys is None:
-            store.ingest("A", index, x=x)
+            store.ingest("A", timestamps[index], x=x)
         else:
-            store.ingest("A", index, x=x, y=ys[index])
-        value = store.point_in_time(spec.name, "A", index)
+            store.ingest("A", timestamps[index], x=x, y=ys[index])
+        value = store.point_in_time(spec.name, "A", timestamps[index])
         assert value is not None
         values.append(value)
     return values
 
 
-def _reference(spec: FeatureSpec, xs: list[float], ys: list[float] | None) -> list[float]:
+def _reference(
+    spec: FeatureSpec,
+    xs: list[float],
+    ys: list[float] | None,
+    ts: list[int] | None = None,
+) -> list[float]:
     result: list[float] = []
     if spec.kind.value == "ewma":
         assert spec.halflife is not None
@@ -49,10 +61,19 @@ def _reference(spec: FeatureSpec, xs: list[float], ys: list[float] | None) -> li
             result.append(math.fsum(terms))
         return result
 
-    assert spec.window is not None
-    window_size = spec.window
+    timestamps = ts if ts is not None else list(range(len(xs)))
+    if spec.is_time_window:
+        assert spec.time_window is not None
+        duration = spec.time_window
+    else:
+        assert spec.window is not None
+        duration = 0
     for index in range(len(xs)):
-        start = max(0, index - window_size + 1)
+        if spec.is_time_window:
+            start = bisect_left(timestamps, timestamps[index] - duration)
+        else:
+            assert spec.window is not None
+            start = max(0, index - spec.window + 1)
         window = np.asarray(xs[start : index + 1], dtype=np.float64)
         if spec.kind.value == "mean":
             value = float(np.mean(window))
@@ -101,6 +122,55 @@ def test_matches_numpy_reference(kind: str, window: int) -> None:
     actual = _run(spec, xs, ys)
     expected = _reference(spec, xs, ys)
     np.testing.assert_allclose(actual, expected, rtol=RTOL, atol=ATOL, equal_nan=True)
+
+
+@pytest.mark.parametrize("duration", [1, 15, 40, 200])
+@pytest.mark.parametrize("kind", ["mean", "std", "zscore", "cum_return", "corr"])
+def test_time_window_matches_numpy_reference(kind: str, duration: int) -> None:
+    rng = np.random.default_rng(duration * 31 + len(kind))
+    gaps = rng.integers(1, 20, size=120)
+    ts = [int(value) for value in np.cumsum(gaps)]
+    xs = list(100.0 + rng.standard_normal(120).cumsum())
+    ys = list(50.0 + rng.standard_normal(120).cumsum())
+    if kind == "corr":
+        spec = FeatureSpec.corr(f"tcorr_{duration}", time_window=duration)
+    else:
+        spec = FeatureSpec(
+            f"t{kind}_{duration}",
+            FeatureKind(kind),
+            time_window=duration,
+            inputs=("x",),
+        )
+    actual = _run(spec, xs, ys, ts)
+    expected = _reference(spec, xs, ys, ts)
+    np.testing.assert_allclose(actual, expected, rtol=RTOL, atol=ATOL, equal_nan=True)
+
+
+def test_time_window_boundary_is_inclusive() -> None:
+    ts = [0, 10, 20]
+    xs = [1.0, 2.0, 4.0]
+    values = _run(FeatureSpec.mean("m", time_window=10), xs, ts=ts)
+    assert values == pytest.approx([1.0, 1.5, 3.0])
+    # At t=20 the window is [10, 20]: the observation at 0 is out, the one at
+    # exactly 10 is in.
+    assert values[2] == pytest.approx((2.0 + 4.0) / 2.0)
+
+
+def test_time_window_smaller_than_the_gap_has_one_observation() -> None:
+    ts = [0, 100, 200]
+    xs = [5.0, 7.0, 9.0]
+    mean = _run(FeatureSpec.mean("m", time_window=1), xs, ts=ts)
+    assert mean == [5.0, 7.0, 9.0]
+    assert _run(FeatureSpec.std("s", time_window=1), xs, ts=ts) == [0.0, 0.0, 0.0]
+    assert all(
+        math.isnan(value) for value in _run(FeatureSpec.zscore("z", time_window=1), xs, ts=ts)
+    )
+    assert all(
+        math.isnan(value) for value in _run(FeatureSpec.cum_return("r", time_window=1), xs, ts=ts)
+    )
+    assert all(
+        math.isnan(value) for value in _run(FeatureSpec.corr("c", time_window=1), xs, xs, ts=ts)
+    )
 
 
 @pytest.mark.parametrize("halflife", [0.5, 1.0, 5.0, 60.0])

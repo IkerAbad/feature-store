@@ -52,6 +52,52 @@ def test_invalid_specs(kwargs: dict[str, object]) -> None:
         FeatureSpec(**kwargs)  # type: ignore[arg-type]
 
 
+def test_time_window_constructors() -> None:
+    spec = FeatureSpec.mean("m", time_window=60)
+    assert spec.is_time_window
+    assert spec.window is None
+    assert spec.time_window == 60
+    assert spec.window_size == 60
+    assert FeatureSpec.std("s", time_window=10).kind is FeatureKind.STD
+    assert FeatureSpec.zscore("z", time_window=10).kind is FeatureKind.ZSCORE
+    assert FeatureSpec.cum_return("r", time_window=10).kind is FeatureKind.CUM_RETURN
+    assert FeatureSpec.corr("c", time_window=10).inputs == ("x", "y")
+    assert not FeatureSpec.mean("m", 5).is_time_window
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"name": "ok", "kind": FeatureKind.MEAN},
+        {"name": "ok", "kind": FeatureKind.MEAN, "window": 5, "time_window": 10},
+        {"name": "ok", "kind": FeatureKind.MEAN, "time_window": 0},
+        {"name": "ok", "kind": FeatureKind.MEAN, "time_window": -3},
+        {"name": "ok", "kind": FeatureKind.MEAN, "time_window": 1.5},
+        {"name": "ok", "kind": FeatureKind.EWMA, "time_window": 5, "halflife": 2.0},
+    ],
+)
+def test_invalid_time_windows(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        FeatureSpec(**kwargs)  # type: ignore[arg-type]
+
+
+def test_time_window_json_round_trip() -> None:
+    spec = FeatureSpec.corr("c", time_window=42, x="a", y="b")
+    payload = spec.to_dict()
+    assert payload["time_window"] == 42
+    assert FeatureSpec.from_dict(payload) == spec
+
+
+def test_legacy_catalogue_has_no_time_window() -> None:
+    spec = FeatureSpec.from_dict({"name": "m", "kind": "mean", "window": 5, "inputs": ["x"]})
+    assert spec.time_window is None
+    assert not spec.is_time_window
+
+
+def test_time_window_str() -> None:
+    assert "time_window=60" in str(FeatureSpec.mean("m", time_window=60))
+
+
 def test_json_round_trip() -> None:
     specs = [
         FeatureSpec.mean("mean_5", 5, description="five ticks"),

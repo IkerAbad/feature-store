@@ -57,6 +57,23 @@ def standard_specs(
     return specs
 
 
+def time_specs(durations: Sequence[int] = (3, 12, 60), halflife: float = 5.0) -> list[FeatureSpec]:
+    """One spec of every kind for each time-window width in ticks."""
+    specs: list[FeatureSpec] = []
+    for duration in durations:
+        specs.extend(
+            [
+                FeatureSpec.mean(f"tmean_{duration}", time_window=duration),
+                FeatureSpec.std(f"tstd_{duration}", time_window=duration),
+                FeatureSpec.zscore(f"tzscore_{duration}", time_window=duration),
+                FeatureSpec.cum_return(f"tret_{duration}", time_window=duration),
+                FeatureSpec.corr(f"tcorr_{duration}", time_window=duration),
+            ]
+        )
+    specs.append(FeatureSpec.ewma(f"ewma_{halflife:g}", halflife))
+    return specs
+
+
 def assert_same_bits(actual: float, expected: float, context: str = "") -> None:
     assert same_bits(actual, expected), (
         f"{context}: expected {expected!r} ({expected.hex()}), got {actual!r} ({actual.hex()})"

@@ -12,7 +12,7 @@ import random
 
 import pytest
 
-from conftest import latest_values, standard_specs, synthetic_ticks
+from conftest import latest_values, standard_specs, synthetic_ticks, time_specs
 from feature_store import FeatureStore, Tick, compute_batch
 from feature_store._bits import same_bits
 
@@ -108,6 +108,56 @@ def test_missing_column_keeps_batch_and_incremental_equal() -> None:
     # Every correlation value must be NaN: the y column was never observed.
     values = latest_values(store, "corr_8", "S")
     assert all(value != value for value in values.values())
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_time_windows_incremental_equals_batch(seed: int) -> None:
+    ticks = synthetic_ticks(seed, 40 + 6 * seed, series=f"T{seed}")
+    specs = time_specs((1, 3, 12))
+    store = FeatureStore.memory(columns=("x", "y"))
+    for spec in specs:
+        store.register(spec)
+    for tick in ticks:
+        store.push_values(
+            tick.series,
+            tick.ts,
+            (tick.values["x"], tick.values["y"]),
+            seq=tick.seq,
+        )
+    _assert_store_matches(store, specs, ticks, f"T{seed}")
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_time_windows_with_shuffled_arrivals(seed: int) -> None:
+    ticks = synthetic_ticks(200 + seed, 70, series="T")
+    specs = time_specs((2, 5, 20))
+    store = FeatureStore.memory(
+        columns=("x", "y"), late_policy="recompute", allowed_lateness=10**12
+    )
+    for spec in specs:
+        store.register(spec)
+    order = list(range(len(ticks)))
+    random.Random(seed).shuffle(order)
+    for index in order:
+        tick = ticks[index]
+        store.push_values(tick.series, tick.ts, (tick.values["x"], tick.values["y"]), seq=tick.seq)
+    _assert_store_matches(store, specs, ticks, "T")
+
+
+def test_time_windows_with_identical_timestamps() -> None:
+    ticks = [
+        Tick("S", 1_000, {"x": 10.0, "y": 1.0}, seq=0),
+        Tick("S", 1_000, {"x": 11.0, "y": 2.0}, seq=1),
+        Tick("S", 1_500, {"x": 13.0, "y": 4.0}, seq=2),
+        Tick("S", 2_000, {"x": 12.0, "y": 3.0}, seq=3),
+    ]
+    specs = time_specs((500, 1_001))
+    store = FeatureStore.memory(columns=("x", "y"))
+    for spec in specs:
+        store.register(spec)
+    for tick in ticks:
+        store.push_values(tick.series, tick.ts, (tick.values["x"], tick.values["y"]), seq=tick.seq)
+    _assert_store_matches(store, specs, ticks, "S")
 
 
 def test_batch_is_independent_of_input_order() -> None:

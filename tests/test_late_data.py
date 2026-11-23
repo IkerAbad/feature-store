@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import latest_values, standard_specs, synthetic_ticks
+from conftest import latest_values, standard_specs, synthetic_ticks, time_specs
 from feature_store import FeatureSpec, FeatureStore, Tick, compute_batch
 from feature_store._bits import same_bits
 from feature_store.errors import DuplicateRecordError
@@ -104,6 +104,26 @@ def test_out_of_order_inside_lateness_is_replayed() -> None:
         store.point_in_time("mean_5", "S", late_tick.ts)
         == expected[("mean_5", "S", late_tick.ts, 100)]
     )
+
+
+def test_time_window_late_recompute_matches_batch() -> None:
+    ticks = synthetic_ticks(11, 30)
+    specs = time_specs((3, 12))
+    store = FeatureStore.memory(columns=("x", "y"), late_policy="recompute", allowed_lateness=0)
+    for spec in specs:
+        store.register(spec)
+    _feed(store, ticks)
+    late = Tick("S", ticks[10].ts + 1, {"x": 7.0, "y": 3.0}, seq=10_000)
+    result = store.push_values("S", late.ts, (7.0, 3.0), seq=late.seq)
+    assert result.status == "late_recomputed"
+
+    everything = [*ticks, late]
+    expected = compute_batch(specs, everything, columns=("x", "y"))
+    for spec in specs:
+        actual = latest_values(store, spec.name, "S")
+        assert len(actual) == len(everything)
+        for key, value in actual.items():
+            assert same_bits(value, expected[(spec.name, "S", *key)])
 
 
 def test_same_key_twice_is_rejected() -> None:

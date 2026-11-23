@@ -19,6 +19,10 @@ SPECS = [
     FeatureSpec.cum_return("ret_3", 3),
     FeatureSpec.corr("corr_3", 3),
     FeatureSpec.ewma("ewma_2", 2.0),
+    FeatureSpec.mean("tmean_2500", time_window=2500),
+    FeatureSpec.zscore("tzscore_2500", time_window=2500),
+    FeatureSpec.cum_return("tret_2500", time_window=2500),
+    FeatureSpec.corr("tcorr_2500", time_window=2500),
 ]
 
 SETTINGS = settings(
