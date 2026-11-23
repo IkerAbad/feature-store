@@ -305,6 +305,14 @@ difference, because only the 100 000-record tail is replayed.
 
 ## Install
 
+From the v0.1.0 release wheel:
+
+```bash
+python -m pip install https://github.com/IkerAbad/feature-store/releases/download/v0.1.0/feature_store-0.1.0-py3-none-any.whl
+```
+
+From source:
+
 ```bash
 python -m pip install -e ".[dev]"
 ```
