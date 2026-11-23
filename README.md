@@ -6,6 +6,9 @@ Incremental financial features with point-in-time correctness, count and time
 windows, watermarks for late data, restart checkpoints and a versioned Parquet
 backend.
 
+The PyPI distribution is `incremental-feature-store`; the import package is
+`feature_store`.
+
 Author: Iker Abad (GitHub: [IkerAbad](https://github.com/IkerAbad)).
 License: MIT, Copyright (c) 2026 Iker Abad.
 
@@ -305,10 +308,10 @@ difference, because only the 100 000-record tail is replayed.
 
 ## Install
 
-From the v0.1.0 release wheel:
+From PyPI:
 
 ```bash
-python -m pip install https://github.com/IkerAbad/feature-store/releases/download/v0.1.0/feature_store-0.1.0-py3-none-any.whl
+python -m pip install incremental-feature-store
 ```
 
 From source:
