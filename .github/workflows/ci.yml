@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Lint
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Type check
+        run: python -m mypy src tests benchmarks
+      - name: Tests
+        run: python -m pytest -q --cov=feature_store --cov-report=term-missing
+      - name: Benchmark smoke test
+        if: matrix.python-version == '3.12'
+        run: >
+          python benchmarks/bench.py
+          --ticks 20000 --recompute-ticks 20000
+          --storage-ticks 2000 --scaling-ticks 1000
+          --chunk 20000
+          --out ${{ runner.temp }}/bench.json
+
+  package:
+    name: wheel / Python 3.12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel . --no-deps -w dist
+      - name: Install and import
+        run: |
+          python -m pip install "numpy>=1.26" "pyarrow>=15"
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -c "import feature_store; print(feature_store.__version__)"
+          python -c "import importlib.resources as r; assert (r.files('feature_store') / 'py.typed').is_file(); print('py.typed ok')"
