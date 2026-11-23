@@ -45,6 +45,12 @@ jobs:
           --storage-ticks 2000 --scaling-ticks 1000
           --chunk 20000
           --out ${{ runner.temp }}/bench.json
+      - name: Reopen smoke test
+        if: matrix.python-version == '3.12'
+        run: >
+          python benchmarks/reopen.py
+          --ticks 2000 --tail 100 --chunk 2000 --retained-max 0
+          --out ${{ runner.temp }}/reopen.json
 
   package:
     name: wheel / Python 3.12
