@@ -22,11 +22,11 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -100,6 +100,7 @@ class Storage(Protocol):
     """Minimal contract the feature store needs from a backend."""
 
     wants_rows: bool
+    wants_raw: bool
 
     def write_rows(self, rows: Sequence[FeatureRow]) -> None: ...
 
@@ -109,7 +110,25 @@ class Storage(Protocol):
 
     def rows(self, feature: str, series: str) -> list[FeatureRow]: ...
 
-    def read_raw(self) -> list[RawRecord]: ...
+    def partitions(self) -> list[tuple[str, str]]: ...
+
+    def rewrite_partition(self, feature: str, series: str, rows: Sequence[FeatureRow]) -> None: ...
+
+    def read_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> list[RawRecord]: ...
+
+    def iter_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> Iterator[tuple[str, list[RawRecord]]]: ...
+
+    def raw_files(self) -> list[str]: ...
 
     def read_dropped(self) -> list[DroppedRecord]: ...
 
@@ -122,6 +141,7 @@ class MemoryStorage:
     """In-memory backend, useful for tests and notebooks."""
 
     wants_rows = True
+    wants_raw = True
 
     def __init__(self) -> None:
         self._rows: list[FeatureRow] = []
@@ -140,8 +160,35 @@ class MemoryStorage:
     def rows(self, feature: str, series: str) -> list[FeatureRow]:
         return [row for row in self._rows if row.feature == feature and row.series == series]
 
-    def read_raw(self) -> list[RawRecord]:
-        return list(self._raw)
+    def partitions(self) -> list[tuple[str, str]]:
+        return sorted({(row.feature, row.series) for row in self._rows})
+
+    def rewrite_partition(self, feature: str, series: str, rows: Sequence[FeatureRow]) -> None:
+        self._rows = [
+            row for row in self._rows if not (row.feature == feature and row.series == series)
+        ]
+        self._rows.extend(rows)
+
+    def read_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> list[RawRecord]:
+        return [record for record in self._raw if series is None or record.series == series]
+
+    def iter_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> Iterator[tuple[str, list[RawRecord]]]:
+        batch = [record for record in self._raw if series is None or record.series == series]
+        if batch:
+            yield batch[0].series, batch
+
+    def raw_files(self) -> list[str]:
+        return []
 
     def read_dropped(self) -> list[DroppedRecord]:
         return list(self._dropped)
@@ -161,6 +208,7 @@ class NullStorage:
     """
 
     wants_rows = False
+    wants_raw = False
 
     def __init__(self) -> None:
         self.rows_written = 0
@@ -179,7 +227,29 @@ class NullStorage:
     def rows(self, feature: str, series: str) -> list[FeatureRow]:
         return []
 
-    def read_raw(self) -> list[RawRecord]:
+    def partitions(self) -> list[tuple[str, str]]:
+        return []
+
+    def rewrite_partition(self, feature: str, series: str, rows: Sequence[FeatureRow]) -> None:
+        return None
+
+    def read_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> list[RawRecord]:
+        return []
+
+    def iter_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> Iterator[tuple[str, list[RawRecord]]]:
+        return iter(())
+
+    def raw_files(self) -> list[str]:
         return []
 
     def read_dropped(self) -> list[DroppedRecord]:
@@ -196,6 +266,7 @@ class ParquetStorage:
     """Append-only Parquet backend, partitioned by feature and series."""
 
     wants_rows = True
+    wants_raw = True
 
     def __init__(
         self, root: str | Path, columns: Sequence[str], *, flush_every: int = 50_000
@@ -256,10 +327,66 @@ class ParquetStorage:
             )
         return rows
 
-    def read_raw(self) -> list[RawRecord]:
-        records: list[RawRecord] = list(self._raw_buffer)
-        for directory in sorted(self._raw_dir.glob("series=*")):
-            table = _read_partition(directory)
+    def partitions(self) -> list[tuple[str, str]]:
+        found: list[tuple[str, str]] = []
+        for feature_dir in sorted(self._features_dir.glob("feature=*")):
+            if not feature_dir.is_dir():
+                continue
+            feature = unquote(feature_dir.name[len("feature=") :])
+            for series_dir in sorted(feature_dir.glob("series=*")):
+                if not series_dir.is_dir():
+                    continue
+                found.append((feature, unquote(series_dir.name[len("series=") :])))
+        return found
+
+    def rewrite_partition(self, feature: str, series: str, rows: Sequence[FeatureRow]) -> None:
+        directory = self._feature_partition(feature, series)
+        directory.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_pylist(
+            [
+                {
+                    "feature": row.feature,
+                    "series": row.series,
+                    "ts": row.ts,
+                    "seq": row.seq,
+                    "value": row.value,
+                    "version": row.version,
+                    "reason": row.reason,
+                    "ingested_ns": row.ingested_ns,
+                }
+                for row in rows
+            ],
+            schema=_FEATURE_SCHEMA,
+        )
+        written = _write_table(table, directory)
+        for file in directory.glob("*.parquet"):
+            if file != written:
+                file.unlink()
+        self._row_buffer = [
+            row for row in self._row_buffer if not (row.feature == feature and row.series == series)
+        ]
+
+    def read_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> list[RawRecord]:
+        excluded = set(exclude_files)
+        records: list[RawRecord] = [
+            record for record in self._raw_buffer if series is None or record.series == series
+        ]
+        if series is None:
+            directories = sorted(self._raw_dir.glob("series=*"))
+        else:
+            directories = [self._raw_dir / f"series={quote(series, safe='')}"]
+        for directory in directories:
+            files = [
+                file
+                for file in sorted(directory.glob("*.parquet"))
+                if self._relative(file) not in excluded
+            ]
+            table = _read_files(files)
             if table is None:
                 continue
             names = [name for name in table.schema.names if name not in _RAW_META]
@@ -274,6 +401,41 @@ class ParquetStorage:
                     )
                 )
         return records
+
+    def raw_files(self) -> list[str]:
+        return sorted(self._relative(file) for file in self._raw_dir.glob("series=*/*.parquet"))
+
+    def iter_raw(
+        self,
+        *,
+        series: str | None = None,
+        exclude_files: Collection[str] = (),
+    ) -> Iterator[tuple[str, list[RawRecord]]]:
+        excluded = set(exclude_files)
+        if series is None:
+            directories = sorted(self._raw_dir.glob("series=*"))
+        else:
+            directories = [self._raw_dir / f"series={quote(series, safe='')}"]
+        for directory in directories:
+            for file in sorted(directory.glob("*.parquet")):
+                if self._relative(file) in excluded:
+                    continue
+                table = _read_files([file])
+                if table is None:
+                    continue
+                names = [name for name in table.schema.names if name not in _RAW_META]
+                batch = [
+                    RawRecord(
+                        series=item["series"],
+                        ts=item["ts"],
+                        seq=item["seq"],
+                        values=tuple(item[name] for name in names),
+                        ingested_ns=item["ingested_ns"],
+                    )
+                    for item in table.to_pylist()
+                ]
+                if batch:
+                    yield batch[0].series, batch
 
     def read_dropped(self) -> list[DroppedRecord]:
         records: list[DroppedRecord] = list(self._dropped_buffer)
@@ -295,6 +457,9 @@ class ParquetStorage:
         return records
 
     # -- internals ------------------------------------------------------
+    def _relative(self, path: Path) -> str:
+        return path.relative_to(self.root).as_posix()
+
     def _feature_partition(self, feature: str, series: str) -> Path:
         return (
             self._features_dir
@@ -388,15 +553,21 @@ def _read_partition(directory: Path) -> pa.Table | None:
     if not directory.exists():
         return None
     files = sorted(directory.glob("*.parquet"))
+    return _read_files(files)
+
+
+def _read_files(files: Sequence[Path]) -> pa.Table | None:
     if not files:
         return None
     dataset = ds.dataset([str(file) for file in files], format="parquet")
     return dataset.to_table()
 
 
-def _write_table(table: pa.Table, directory: Path) -> None:
+def _write_table(table: pa.Table, directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     name = f"part-{time.time_ns()}-{uuid.uuid4().hex[:8]}.parquet"
     temporary = directory / (name + ".tmp")
     pq.write_table(table, temporary, compression="zstd")
-    os.replace(temporary, directory / name)
+    final = directory / name
+    os.replace(temporary, final)
+    return final

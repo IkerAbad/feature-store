@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "feature-store"
 version = "0.1.0"
-description = "Incremental, point-in-time-correct financial features with late-data handling and a versioned Parquet backend."
+description = "Incremental, point-in-time-correct financial features with count and time windows, restart checkpoints and a versioned Parquet backend."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -16,6 +16,8 @@ keywords = [
     "incremental computation",
     "point-in-time",
     "streaming",
+    "time windows",
+    "checkpoints",
     "quantitative finance",
 ]
 classifiers = [

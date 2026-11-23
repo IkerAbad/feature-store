@@ -28,7 +28,14 @@ from .storage import (
     NullStorage,
     ParquetStorage,
 )
-from .store import FeatureStore, IngestResult, StoreStats
+from .store import (
+    FeatureStore,
+    IngestResult,
+    PartitionPrune,
+    PrunePolicy,
+    PruneReport,
+    StoreStats,
+)
 
 __version__ = "0.1.0"
 
@@ -46,6 +53,9 @@ __all__ = [
     "MemoryStorage",
     "NullStorage",
     "ParquetStorage",
+    "PartitionPrune",
+    "PrunePolicy",
+    "PruneReport",
     "StoreStats",
     "Tick",
     "UnknownColumnError",
